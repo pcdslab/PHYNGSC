@@ -8,8 +8,7 @@ phyNGSC is a hybrid strategy between MPI and OpenMP to accelerate the compressio
 
 Our algorithm introduces a novel timestamp-based approach which allows concurrent writing of compressed data in a non-deterministic order and thereby allows us to exploit a high amount of parallelism.
 
-As a proof-of-concept, we implemented some methods developed for [DSRC v1][1] to underline the compression portion of our hybrid parallel strategy, since it exhibits superior performance for sequential solutions.
-[1]: http://sun.aei.polsl.pl/dsrc/
+As a proof-of-concept, we implemented some methods developed for [DSRC v1](http://sun.aei.polsl.pl/dsrc/) to underline the compression portion of our hybrid parallel strategy, since it exhibits superior performance for sequential solutions.
 
 ### Disclaimer:
 
@@ -155,12 +154,12 @@ NGAAAACAGCAACAAACGACCGAGACAGACGACCACTAGTACTGACACGAATGTTGAGACTTCAAAGGACAAAACC
 
 ### More Datasets for Testing
 
-* [ERR229788.filt.fastq](ftp://ftp-trace.ncbi.nih.gov/1000genomes/ftp//phase3/data/HG00362/sequence_read/ERR229788.filt.fastq.gz)
-* [ERR260401_2.filt.fastq](ftp://ftp-trace.ncbi.nih.gov/1000genomes/ftp//phase3/data/HG00288/sequence_read/ERR260401_2.filt.fastq.gz)
-* [ERR022729_1.filt.fastq](ftp://ftp-trace.ncbi.nih.gov/1000genomes/ftp//phase3/data/HG00365/sequence_read/ERR022729_1.filt.fastq.gz)
-* [ERR022548_2.fastq](ftp://ftp.sra.ebi.ac.uk/vol1/fastq//ERR022/ERR022548/ERR022548_2.fastq.gz)
+* [ERR229788.filt.fastq](https://goo.gl/6y1Qw3)
+* [ERR260401_2.filt.fastq](https://goo.gl/oYV2Zq)
+* [ERR022729_1.filt.fastq](https://goo.gl/QoDxen)
+* [ERR022548_2.fastq](https://goo.gl/Zqw9WT)
 
-You can find more FASTQ datasets at the [EBI FTP site](ftp://ftp.1000genomes.ebi.ac.uk/vol1/ftp/data_collections/) or the [IGSR data portal](http://www.internationalgenome.org/data-portal/sample).
+You can find more FASTQ datasets at the [EBI FTP site](https://goo.gl/CkWqEY) or the [IGSR data portal](http://www.internationalgenome.org/data-portal/sample).
 
 ## Authors
 
