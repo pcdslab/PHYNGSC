@@ -718,7 +718,7 @@ int main(int argc, char ** argv)
         // Store meta information about the current data to be written to output file
         #pragma omp section
         {
-          p_write_buff_bit_stream.Create(0);
+          p_write_buff_bit_stream.Create(1);
           p_write_buff_bit_stream.PutWord(no_records);
           p_write_buff_bit_stream.PutWord(max_quality_length);
           p_write_buff_bit_stream.PutWord(global_max_sequence_length);
