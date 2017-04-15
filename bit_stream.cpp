@@ -12,14 +12,12 @@
 #include <algorithm>
 #include <stdio.h>
 
-
 // --------------------------------------------------------------------------------------------
 BitStream::BitStream()
 	:	IO_BUFFER_SIZE(0)
 	,	file_pos(0)
-	,	io_buffer(NULL)
+	,	io_buffer(0)
 	,	io_buffer_pos(0)
-	,	io_buffer_size(0)
 	,	word_buffer(0)
 	,	word_buffer_pos(0)
 	,	word_buffer_size(32)
@@ -33,24 +31,14 @@ BitStream::BitStream()
 // --------------------------------------------------------------------------------------------
 BitStream::~BitStream()
 {
-	if (io_buffer)
-		delete[] io_buffer;
-}
-
-// --------------------------------------------------------------------------------------------
-bool BitStream::WriteBuffer()
-{
-	io_buffer_pos = 0;
-	return true;
+	if (io_buffer.size())
+		io_buffer.clear();
 }
 
 // --------------------------------------------------------------------------------------------
 bool BitStream::Create(uint32 buffer_type)
 {
-	IO_BUFFER_SIZE = buffer_type == 0 ? 1 << 15 : 1 << 20 ;
-	io_buffer = new uchar[IO_BUFFER_SIZE];
-	io_buffer_size = IO_BUFFER_SIZE;
-
+	IO_BUFFER_SIZE = 1 << 21;
 	word_buffer_size = 32;
 	io_buffer_pos = 0;
 	file_pos = 0;
@@ -61,12 +49,23 @@ bool BitStream::Create(uint32 buffer_type)
 // --------------------------------------------------------------------------------------------
 bool BitStream::Close()
 {
-	if (io_buffer)
+	if (io_buffer.size())
 	{
-		delete[] io_buffer;
-		io_buffer = NULL;
+		io_buffer.clear();
 	}
 	io_buffer_pos = 0;
+	word_buffer_pos = 0;
+	word_buffer = 0;
 	return true;
 }
 
+// --------------------------------------------------------------------------------------------
+bool BitStream::SetIO_Buffer_Pos(uint64 pos)
+{
+	io_buffer_pos = (int32) pos;
+	
+	word_buffer_pos = 0;
+	word_buffer = 0;
+
+	return true;
+}

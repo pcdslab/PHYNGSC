@@ -39,6 +39,15 @@ public:
 	inline bool PutDWord(const uint64 data);
 	inline bool Put2Bytes(const uint32 data);
 
+	inline bool GetBit(uint32 &word);
+	inline bool Get2Bits(uint32 &word);
+	inline bool GetBits(uint32 &word, uint32 n_bits);
+	inline bool GetBytes(uchar *data, uint32 n_bytes);
+	inline bool GetByte(uint32 &byte);
+	inline bool GetWord(uint32 &data);
+	inline bool GetDWord(uint64 &data);
+	inline bool Get2Bytes(uint32 &data);
+
 	static inline uint32 BitLength(const uint64 x);
 
 	// buffer_type: 0 -> for the processor buffer
@@ -46,22 +55,25 @@ public:
 	bool Create(uint32 buffer_type);
 	bool Close();
 
-	uchar* GetIO_Buffer() const { return io_buffer; };
+	std::vector<uchar> GetIO_Buffer() const { return io_buffer; };
 	int32 GetIO_Buffer_Pos() { return io_buffer_pos; };
+
+	void SetIO_Buffer(uchar *read_buffer, uint32 r_buff_size, uint32 start_pos = 0)
+	{ 
+		io_buffer.assign(read_buffer+start_pos, read_buffer+r_buff_size); 
+	};
+	bool SetIO_Buffer_Pos(uint64 pos);
 
 private:
 	int32 IO_BUFFER_SIZE;
 
 	uint64 file_pos;
-	uchar *io_buffer;
+	std::vector<uchar> io_buffer;
 	int32 io_buffer_pos;
-	int32 io_buffer_size;
 	uint32 word_buffer;
 	int32 word_buffer_pos;
 	int32 word_buffer_size;
 	uint32 n_bit_mask[32];
-
-	bool WriteBuffer();
 };
 
 // --------------------------------------------------------------------------------------------
@@ -198,9 +210,8 @@ bool BitStream::FlushInputWordBuffer()
 // --------------------------------------------------------------------------------------------
 bool BitStream::PutByte(const uchar byte)
 {
-	if (io_buffer_pos >= IO_BUFFER_SIZE)
-		WriteBuffer();
-	io_buffer[io_buffer_pos++] = byte;
+	io_buffer.push_back(byte);
+	io_buffer_pos++;
 	file_pos++;
 
 	return true;
@@ -218,22 +229,11 @@ bool BitStream::Put2Bytes(const uint32 data)
 // --------------------------------------------------------------------------------------------
 bool BitStream::PutBytes(const uchar *data, int32 n_bytes)
 {
-	uint32 to_store = MIN(n_bytes, IO_BUFFER_SIZE-io_buffer_pos);
-	do
-	{
-		std::copy(data, data+to_store, io_buffer+io_buffer_pos);
-		io_buffer_pos += to_store;
-		file_pos += to_store;
-		if (io_buffer_pos >= IO_BUFFER_SIZE)
-			WriteBuffer();
-		if (n_bytes -= to_store)
-		{
-			data += to_store;
-			to_store = MIN(n_bytes, IO_BUFFER_SIZE-io_buffer_pos); 
-		}
-		else
-			to_store = 0;
-	} while (to_store);
+	for (int32 i = 0; i < n_bytes; ++i)
+		io_buffer.push_back(data[i]);
+
+	io_buffer_pos += n_bytes;
+	file_pos += n_bytes;
 
 	return true;
 }
@@ -263,6 +263,7 @@ bool BitStream::PutWord(const uint32 data)
 
 	return true;
 }
+
 // --------------------------------------------------------------------------------------------
 uint32 BitStream::BitLength(const uint64 x)
 {
@@ -275,5 +276,160 @@ uint32 BitStream::BitLength(const uint64 x)
 	return 64;
 }
 
-#endif
+// --------------------------------------------------------------------------------------------
+bool BitStream::GetBit(uint32 &word)
+{
+	if (word_buffer_pos == 0)
+	{
+		if (!GetByte(word_buffer))
+			return false;
+		word_buffer_pos = 7;
+		word = word_buffer >> 7;
+	}
+	else
+	{
+		word = (word_buffer >> (--word_buffer_pos)) & 1;
+	}
 
+	return true;
+}
+
+// --------------------------------------------------------------------------------------------
+bool BitStream::Get2Bits(uint32 &word)
+{
+	if (word_buffer_pos >= 2)
+	{
+		word = (word_buffer >> (word_buffer_pos-2)) & 3;
+		word_buffer_pos -= 2;
+	}
+	else if (word_buffer_pos == 0)
+	{
+		if (!GetByte(word_buffer))
+			return false;
+		word = word_buffer >> 6;
+		word_buffer_pos = 6;
+	}
+	else
+	{
+		word = (word_buffer & 1) << 1;
+		if (!GetByte(word_buffer))
+			return false;
+		word += word_buffer >> 7;
+		word_buffer_pos = 7;
+	}
+
+	return true;
+}
+
+// --------------------------------------------------------------------------------------------
+bool BitStream::GetBits(uint32 &word, uint32 n_bits)
+{
+	my_assert(n_bits != 0);
+	word = 0;
+	while (n_bits)
+	{
+		if (word_buffer_pos == 0)
+		{
+			if (!GetByte(word_buffer))
+				return false;
+			word_buffer_pos = 8;
+		}
+
+		if ((int32) n_bits > word_buffer_pos)
+		{
+			word <<= word_buffer_pos;
+			word += word_buffer & n_bit_mask[word_buffer_pos];
+			n_bits -= word_buffer_pos;
+			word_buffer_pos = 0;
+		}
+		else
+		{
+			word <<= n_bits;
+			word_buffer_pos -= n_bits;
+			word += (word_buffer >> word_buffer_pos) & n_bit_mask[n_bits];
+			return true;
+		}
+	}
+
+	return true;
+}
+
+// --------------------------------------------------------------------------------------------
+bool BitStream::GetByte(uint32 &byte)
+{
+	byte = io_buffer[io_buffer_pos++];
+	file_pos++;
+	return true;
+}
+
+// --------------------------------------------------------------------------------------------
+bool BitStream::GetBytes(uchar *data, uint32 n_bytes)
+{
+	for (int32 i = 0; i < (int32)n_bytes; ++i)
+		data[i] = io_buffer.at(io_buffer_pos+i);
+
+	io_buffer_pos += n_bytes;
+	file_pos      += n_bytes;
+	
+	return true;
+}
+
+// --------------------------------------------------------------------------------------------
+bool BitStream::GetWord(uint32 &data)
+{
+	uint32 c;
+	bool r;
+
+	r = GetByte(c);
+	data = c;
+	r &= GetByte(c);
+	data = (data << 8) + c;
+	r &= GetByte(c);
+	data = (data << 8) + c;
+	r &= GetByte(c);
+	data = (data << 8) + c;
+
+	return r;
+}
+
+// --------------------------------------------------------------------------------------------
+bool BitStream::GetDWord(uint64 &data)
+{
+	uint32 c;
+	bool r;
+
+	r = GetByte(c);
+	data = c;
+	r &= GetByte(c);
+	data = (data << 8) + c;
+	r &= GetByte(c);
+	data = (data << 8) + c;
+	r &= GetByte(c);
+	data = (data << 8) + c;
+	r &= GetByte(c);
+	data = (data << 8) + c;
+	r &= GetByte(c);
+	data = (data << 8) + c;
+	r &= GetByte(c);
+	data = (data << 8) + c;
+	r &= GetByte(c);
+	data = (data << 8) + c;
+
+	return r;
+}
+
+// --------------------------------------------------------------------------------------------
+bool BitStream::Get2Bytes(uint32 &data)
+{
+	uint32 c;
+	bool r;
+
+	r = GetByte(c);
+	data = c;
+	r &= GetByte(c);
+	data = (data << 8) + c;
+
+	return r;
+}
+
+#endif

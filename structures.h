@@ -234,17 +234,63 @@ struct Record
 {
 	uint32 title_end_pos;
 	uint32 seq_end_pos;
+	int32 seq_len;
+	int32 qua_len;
 	std::vector<uint32> fields_end_pos;
 
+	std::vector<uchar> title;
+	std::vector<uchar> dna_seq;
+	std::vector<uchar> quality;
+	uchar plus = '+';
+
 	inline Record();
+	inline bool AppendData(uchar *str, uint32 len, uchar rec_line);
+	inline bool AppendChar(uchar c, uchar rec_line);
 };
 
 // --------------------------------------------------------------------------------------------
 Record::Record()
 	:	title_end_pos(0)
 	,	seq_end_pos(0)
+	,	seq_len(0)
+	,	qua_len(0)
 {
 	
+}
+
+// --------------------------------------------------------------------------------------------
+bool Record::AppendData(uchar *str, uint32 len, uchar rec_line)
+{
+	switch (rec_line)
+	{
+		case 'T':
+			for (uint32 i = 0; i < len; ++i)
+				title.push_back(str[i]);
+			break;
+	  	case 'D':
+	  		for (uint32 i = 0; i < len; ++i)
+				dna_seq.push_back(str[i]);
+			break;
+		case 'Q':
+	  		for (uint32 i = 0; i < len; ++i)
+				quality.push_back(str[i]);
+			break;
+	}
+
+	return true;
+}
+
+// --------------------------------------------------------------------------------------------
+bool Record::AppendChar(uchar c, uchar rec_line)
+{
+	switch (rec_line)
+	{
+		case 'T': title.push_back(c); break;
+	  	case 'D': dna_seq.push_back(c); break;
+		case 'Q': quality.push_back(c); break;
+	}
+
+	return true;
 }
 
 // --------------------------------------------------------------------------------------------
@@ -263,27 +309,49 @@ struct ProcessCompressionInfo
 // --------------------------------------------------------------------------------------------
 struct BlockHeader
 {
-  	int32 wr_id;
-  	int32 BEWR;     // Bits Encoding Working Region ID   
-  	int32 BESO;     // Bits Encoding SubBlock Offsets
-  	int32 split_sb; // If this block contains splitted subblocks (at the start, end or both)
-  	std::vector<int32> sb_offset_list;
+  	int32 WRID;				 // Working Region ID
+  	int32 BHS;				 // Block Header Size
+  	int32 BEWR;     		 // Bits Encoding Working Region ID   
+  	int32 BESO;     		 // Bits Encoding SubBlock Offsets
+  	int32 NOSB; 			 // Number Of SubBlocks.
+  	short BCSS;  			 // Block Contains Splitted SubBlocks?
+  	std::vector<int32> SBOL; // SubBlock's Offset list
 
   	inline int32 HeaderSize();
 };
 
-// --------------------------------------------------------------------------------------------
 int32 BlockHeader::HeaderSize()
 {
-	// Plus 6 bits to encode number of subblocks
-    double size = BEWR + 6;
-    // Plus 5 + 2 bits to encode BESO and split_sb
-    size += (BESO * sb_offset_list.size()) + 5 + 2;
+	// 6 bits to encode NOSB and 12 bits to encode BHS
+    double size = BEWR + 6 + 12;
+    // 5 bits and 2 bits to encode BESO and BCSS
+    size += (BESO * SBOL.size()) + 5 + 2;
 
     // Return size of header in bytes
     return ceil(size / 8);
 
 }
 
-#endif
+// --------------------------------------------------------------------------------------------
+// Structure to store footer information
+// --------------------------------------------------------------------------------------------
+struct Footer
+{
+  int32 BEPS;
+  int32 BEFS;           
+  int32 BEBS;    
+  int32 BESS;     
+  int32 BELB;
+  int32 BEOV;   
+  short LBES;    
+  int32 PS;         
+  int64 FS;     
+  int32 BS;       
+  int32 SS;         
+  std::vector<int32>  OV;        
+  std::vector<int32>  CBO;      
+  std::vector<uint32> LBS;
+  std::vector<uint32> ABS;
+};
 
+#endif

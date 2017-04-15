@@ -8,6 +8,7 @@
 */
 
 #include <vector>
+#include <stdio.h>
 #include <map>
 #include <math.h>
 #include <algorithm>
@@ -26,7 +27,6 @@ void AnalyzeTitleFields(uchar *read_buffer, uint32 field_0_rec_0_pos, int32 c_fi
   const uint32 MAX_NUM_VAL_HUF     = 512;
 
   int32 prev_value = 0;
-
   for (uint32 i = 0; i < no_records; ++i)
   {
     uint32 start_pos = 0; 
@@ -49,18 +49,21 @@ void AnalyzeTitleFields(uchar *read_buffer, uint32 field_0_rec_0_pos, int32 c_fi
       }
     }
 
-    if (end_pos - start_pos > fields[c_field].max_len)
+    uint32 field_len = end_pos - start_pos;
+
+    if (field_len > fields[c_field].max_len)
     {
-      fields[c_field].max_len = end_pos - start_pos;
+      fields[c_field].max_len = field_len;
     }
-    else if (end_pos - start_pos < fields[c_field].min_len)
+    else if (field_len < fields[c_field].min_len)
     {
-      fields[c_field].min_len = end_pos - start_pos;
+      fields[c_field].min_len = field_len;
     }
 
     // Check whether field in a block is constant
-    if (i % DEFAULT_B_SIZE > 0){
-      if (fields[c_field].block_str_len != end_pos-start_pos)
+    if (i % DEFAULT_B_SIZE > 0)
+    {
+      if (fields[c_field].block_str_len != field_len)
       {
         fields[c_field].block_desc.back().is_block_constant = false;
       }
@@ -73,27 +76,25 @@ void AnalyzeTitleFields(uchar *read_buffer, uint32 field_0_rec_0_pos, int32 c_fi
     else
     {
       fields[c_field].block_str_start = start_pos;
-      fields[c_field].block_str_len   = end_pos-start_pos;
+      fields[c_field].block_str_len   = field_len;
       fields[c_field].block_desc.push_back(Field::BlockDesc(true, true, true, 0));
     }
 
-    // Consider instead of using resize(), the use of push_back()
-    // so you don't have memory allocations within a thread
     fields[c_field].chars.resize(fields[c_field].max_len);
-    uint32 chars_len = MIN(MAX_FIELD_STAT_LEN, end_pos-start_pos);
+    uint32 chars_len = MIN(MAX_FIELD_STAT_LEN, field_len);
 
     for (uint32 x = 0; x < chars_len; ++x)
     {
       fields[c_field].chars[x][read_buffer[start_pos+x]]++;
     }
-    for (uint32 x = MAX_FIELD_STAT_LEN; x < end_pos-start_pos; ++x)
+    for (uint32 x = MAX_FIELD_STAT_LEN; x < field_len; ++x)
     {
       fields[c_field].chars[MAX_FIELD_STAT_LEN][read_buffer[start_pos+x]]++;
     }
     
     if (fields[c_field].is_constant)
     {
-      if (end_pos - start_pos != fields[c_field].len)
+      if (field_len != fields[c_field].len)
       {
         fields[c_field].is_constant = false;
       }
@@ -105,15 +106,15 @@ void AnalyzeTitleFields(uchar *read_buffer, uint32 field_0_rec_0_pos, int32 c_fi
 
     if (fields[c_field].is_len_constant)
     {
-      fields[c_field].is_len_constant = fields[c_field].len == end_pos-start_pos;
+      fields[c_field].is_len_constant = fields[c_field].len == field_len;
     }
     
     if (fields[c_field].is_numeric)
     {
-      fields[c_field].is_numeric = utils::is_num(read_buffer+start_pos, end_pos-start_pos);
+      fields[c_field].is_numeric = utils::is_num(read_buffer+start_pos, field_len);
       if (fields[c_field].is_numeric)
       {
-        int32 value = utils::to_num(read_buffer+start_pos, end_pos-start_pos);
+        int32 value = utils::to_num(read_buffer+start_pos, field_len);
         if (value < fields[c_field].min_value)
         {
           fields[c_field].min_value = value;
@@ -134,7 +135,7 @@ void AnalyzeTitleFields(uchar *read_buffer, uint32 field_0_rec_0_pos, int32 c_fi
             if (value - prev_value != fields[c_field].block_delta)
               fields[c_field].block_desc.back().is_block_delta_constant = false;
           }
-          else // j == 1, when there are 2 records on the new block
+          else // when there are 2 records on the new block
           {
             fields[c_field].block_delta = value - prev_value;
             fields[c_field].block_desc.back().block_delta_constant = value - prev_value;
@@ -185,14 +186,14 @@ void AnalyzeTitleFields(uchar *read_buffer, uint32 field_0_rec_0_pos, int32 c_fi
     }
     if (!fields[c_field].is_constant)
     {
-      for (uint32 p = 0; p < end_pos - start_pos && p < fields[c_field].len; ++p)
+      for (uint32 p = 0; p < field_len && p < fields[c_field].len; ++p)
       {
         fields[c_field].Ham_mask[p] &= fields[c_field].data[p] == read_buffer[p+start_pos];
       }
     }
   }
 
-    // Find better encoding of numeric values
+  // Find better encoding of numeric values
   if (!fields[c_field].is_numeric)
   {
     if (!fields[c_field].is_constant)
@@ -285,32 +286,39 @@ void AnalyzeQuality(uchar *read_buffer, Record *&records, int64 no_records, uint
 }
 
 // --------------------------------------------------------------------------------------------
-void StoreTitleHeader(BitStream &h_title_bit_stream, std::vector<Field> &fields)
+void StoreTitle(BitStream &title_bit_stream, std::vector<Field> &fields, uchar *read_buffer,
+  Record *&records, uint32 field_0_rec_0_pos, int64 no_records)
 {
+  const int32  MAX_FIELD_STAT_LEN  = 128;
+  const int32  DEFAULT_B_SIZE      = 32;
   const uint32 MAX_NUM_VAL_HUF     = 512;
-  const uint32 MAX_FIELD_STAT_LEN  = 128;
 
+  int32 n_blocks = (no_records + DEFAULT_B_SIZE -1) / DEFAULT_B_SIZE;
   int32 n_fields = fields.size();
-  h_title_bit_stream.PutWord(n_fields);
+  std::vector<int32> prev_value(n_fields);
+  int32 rec_count = 0;
+  int32 first_rec_in_block; 
+
+  title_bit_stream.PutWord(n_fields);
 
   for (int32 i = 0; i < n_fields; ++i)
   {
-    h_title_bit_stream.PutByte(fields[i].sep);
-    h_title_bit_stream.PutByte(fields[i].is_constant);
+    title_bit_stream.PutByte(fields[i].sep);
+    title_bit_stream.PutByte(fields[i].is_constant);
     if (fields[i].is_constant)
     {
-      h_title_bit_stream.PutWord(fields[i].len);
-      h_title_bit_stream.PutBytes(fields[i].data, fields[i].len);
+      title_bit_stream.PutWord(fields[i].len);
+      title_bit_stream.PutBytes(fields[i].data, fields[i].len);
       continue;
     }
 
-    h_title_bit_stream.PutByte(fields[i].is_numeric);
+    title_bit_stream.PutByte(fields[i].is_numeric);
     if (fields[i].is_numeric)
     {
-      h_title_bit_stream.PutWord(fields[i].min_value);
-      h_title_bit_stream.PutWord(fields[i].max_value);
-      h_title_bit_stream.PutWord(fields[i].min_delta);
-      h_title_bit_stream.PutWord(fields[i].max_delta);
+      title_bit_stream.PutWord(fields[i].min_value);
+      title_bit_stream.PutWord(fields[i].max_value);
+      title_bit_stream.PutWord(fields[i].min_delta);
+      title_bit_stream.PutWord(fields[i].max_delta);
 
       int32 diff, base;
       std::map<int32, int32> &map_stats = fields[i].num_values;
@@ -335,21 +343,21 @@ void StoreTitleHeader(BitStream &h_title_bit_stream, std::vector<Field> &fields)
           huf->Insert(map_stats[base+j]);
         }
         huf->Complete();
-        HuffmanEncoder::StoreTree(h_title_bit_stream, *huf);
+        HuffmanEncoder::StoreTree(title_bit_stream, *huf);
       }
 
       continue;
     }
 
-    h_title_bit_stream.PutByte(fields[i].is_len_constant);
-    h_title_bit_stream.PutWord(fields[i].len);
-    h_title_bit_stream.PutWord(fields[i].max_len);
-    h_title_bit_stream.PutWord(fields[i].min_len);
-    h_title_bit_stream.PutBytes(fields[i].data, fields[i].len);
+    title_bit_stream.PutByte(fields[i].is_len_constant);
+    title_bit_stream.PutWord(fields[i].len);
+    title_bit_stream.PutWord(fields[i].max_len);
+    title_bit_stream.PutWord(fields[i].min_len);
+    title_bit_stream.PutBytes(fields[i].data, fields[i].len);
 
     for (uint32 j = 0; j < fields[i].len; ++j)
     {
-      h_title_bit_stream.PutBit(fields[i].Ham_mask[j]);
+      title_bit_stream.PutBit(fields[i].Ham_mask[j]);
     }
     fields[i].Huffman_local.resize(MIN(fields[i].max_len+1, MAX_FIELD_STAT_LEN+1));
 
@@ -364,7 +372,7 @@ void StoreTitleHeader(BitStream &h_title_bit_stream, std::vector<Field> &fields)
           huf->Insert(fields[i].chars[j][k]);
         }
         huf->Complete(true);
-        HuffmanEncoder::StoreTree(h_title_bit_stream, *huf);
+        HuffmanEncoder::StoreTree(title_bit_stream, *huf);
       }
     } 
     if (fields[i].max_len >= MAX_FIELD_STAT_LEN)
@@ -375,26 +383,13 @@ void StoreTitleHeader(BitStream &h_title_bit_stream, std::vector<Field> &fields)
         huf->Insert(fields[i].chars[(uchar) MAX_FIELD_STAT_LEN][k]);
       }
       huf->Complete(true);
-      HuffmanEncoder::StoreTree(h_title_bit_stream, *huf);
+      HuffmanEncoder::StoreTree(title_bit_stream, *huf);
     }
 
-    h_title_bit_stream.FlushPartialWordBuffer();
+    title_bit_stream.FlushPartialWordBuffer();
   }
-}
 
-// --------------------------------------------------------------------------------------------
-void StoreTitleBody(BitStream &b_title_bit_stream, std::vector<Field> &fields, uchar *read_buffer,
-  Record *&records, uint32 field_0_rec_0_pos, int64 no_records)
-{
-  const int32 MAX_FIELD_STAT_LEN  = 128;
-  const int32 DEFAULT_B_SIZE      = 32;
-
-  int32 n_blocks = (no_records + DEFAULT_B_SIZE -1) / DEFAULT_B_SIZE;
-  int32 n_fields = fields.size();
-  std::vector<int32> prev_value(n_fields);
-  int32 rec_count = 0;
-  int32 first_rec_in_block;
-
+  // Insert specific data about non-constant records
   for (int32 block_no = 0; block_no < n_blocks; ++block_no)
   {
     first_rec_in_block = rec_count;
@@ -412,7 +407,7 @@ void StoreTitleBody(BitStream &b_title_bit_stream, std::vector<Field> &fields, u
       prev_value[i] = 0;
       if (!fields[i].is_numeric)
       {
-        b_title_bit_stream.PutBit(block_desc.is_block_constant);
+        title_bit_stream.PutBit(block_desc.is_block_constant);
       }
 
       if (fields[i].is_numeric)
@@ -420,11 +415,11 @@ void StoreTitleBody(BitStream &b_title_bit_stream, std::vector<Field> &fields, u
         block_desc.is_block_delta_constant &= (int32)block_desc.block_delta_constant == fields[i].min_delta;
         if (fields[i].is_delta_coding)
         {
-          b_title_bit_stream.PutBit(block_desc.is_block_delta_constant);
+          title_bit_stream.PutBit(block_desc.is_block_delta_constant);
         }
         else
         {
-          b_title_bit_stream.PutBit(block_desc.is_block_value_constant);
+          title_bit_stream.PutBit(block_desc.is_block_value_constant);
         }
       }   
     }
@@ -456,9 +451,10 @@ void StoreTitleBody(BitStream &b_title_bit_stream, std::vector<Field> &fields, u
         if (cur_field.is_numeric)
         {
           int32 value = utils::to_num(read_buffer+start_pos, end_pos-start_pos);
+
           if ((i % DEFAULT_B_SIZE) == 0) // Is the first record of Block?
           {
-            b_title_bit_stream.PutBits(value-cur_field.min_value, cur_field.no_of_bits_per_value);
+            title_bit_stream.PutBits(value-cur_field.min_value, cur_field.no_of_bits_per_value);
           }
           else if ((cur_field.is_delta_coding && !cur_field.block_desc[block_no].is_block_delta_constant) ||
             (!cur_field.is_delta_coding && !cur_field.block_desc[block_no].is_block_value_constant))
@@ -476,11 +472,11 @@ void StoreTitleBody(BitStream &b_title_bit_stream, std::vector<Field> &fields, u
             if (cur_field.Huffman_global)
             {
               const HuffmanEncoder::Code* codes = cur_field.Huffman_global->GetCodes();
-              b_title_bit_stream.PutBits(codes[to_store].code, codes[to_store].len);
+              title_bit_stream.PutBits(codes[to_store].code, codes[to_store].len);
             }
             else
             {
-              b_title_bit_stream.PutBits(to_store, cur_field.no_of_bits_per_num);
+              title_bit_stream.PutBits(to_store, cur_field.no_of_bits_per_num);
             }
           }
 
@@ -495,7 +491,7 @@ void StoreTitleBody(BitStream &b_title_bit_stream, std::vector<Field> &fields, u
 
         if (!cur_field.is_len_constant)
         {
-          b_title_bit_stream.PutBits(end_pos-start_pos - cur_field.min_len, cur_field.no_of_bits_per_len);
+          title_bit_stream.PutBits(end_pos-start_pos - cur_field.min_len, cur_field.no_of_bits_per_len);
         }
         
         for (uint32 j = 0; j < end_pos-start_pos; ++j)
@@ -504,12 +500,12 @@ void StoreTitleBody(BitStream &b_title_bit_stream, std::vector<Field> &fields, u
           {
             uchar c = read_buffer[start_pos+j];
             const HuffmanEncoder::Code* codes = cur_field.Huffman_local[MIN(j, MAX_FIELD_STAT_LEN)]->GetCodes();
-            b_title_bit_stream.PutBits(codes[c].code, codes[c].len);
+            title_bit_stream.PutBits(codes[c].code, codes[c].len);
           }
         }
       }
     }
-    b_title_bit_stream.FlushPartialWordBuffer();
+    title_bit_stream.FlushPartialWordBuffer();
   }
 }
 
@@ -626,7 +622,486 @@ void StoreQuality(BitStream &quality_bit_stream, uchar *read_buffer, Record *&re
 }
 
 // --------------------------------------------------------------------------------------------
-void MakeFooter(BitStream &footer_bit_stream, int32 g_size, uint32 FASTQ_size, int32 n_blocks, int32 n_subblocks, 
+void FetchTitleHeader(BitStream &sb_bit_stream, std::vector<Field> &fields)
+{
+  uint32 tmp;
+  uint32 n_fields = 0;
+  const uint32 MAX_NUM_VAL_HUF     = 512;
+  const uint32 MAX_FIELD_STAT_LEN  = 128;
+
+  sb_bit_stream.GetWord(n_fields);
+  fields.resize(n_fields);
+
+  for (uint32 i = 0; i < n_fields; ++i)
+  {
+    sb_bit_stream.GetByte(tmp);
+    my_assert(tmp < 256);
+
+    fields[i].sep = (uchar) tmp;
+    sb_bit_stream.GetByte(tmp);
+    fields[i].is_constant = tmp != 0;
+
+    if (fields[i].is_constant)
+    {
+      sb_bit_stream.GetWord(tmp);
+      fields[i].len = tmp;
+      fields[i].data = new uchar[fields[i].len+1];
+      sb_bit_stream.GetBytes(fields[i].data, fields[i].len);
+
+      continue;
+    }
+
+    sb_bit_stream.GetByte(tmp);
+    fields[i].is_numeric = tmp != 0;
+    if (fields[i].is_numeric)
+    {
+      sb_bit_stream.GetWord(tmp);
+      fields[i].min_value = tmp;
+      sb_bit_stream.GetWord(tmp);
+      fields[i].max_value = tmp;
+      my_assert(fields[i].min_value <= fields[i].max_value);
+
+      sb_bit_stream.GetWord(tmp);
+      fields[i].min_delta = (int32) tmp;
+      sb_bit_stream.GetWord(tmp);
+      fields[i].max_delta = tmp;
+      my_assert(fields[i].min_delta <= fields[i].max_delta);
+ 
+      int32 diff;
+      std::map<int32, int32> &map_stats = fields[i].num_values;
+      if (fields[i].max_value - fields[i].min_value < fields[i].max_delta - fields[i].min_delta)
+      {
+        fields[i].is_delta_coding = false;
+        diff = fields[i].max_value - fields[i].min_value;
+      }
+      else
+      {
+        fields[i].is_delta_coding = true;
+        diff = fields[i].max_delta - fields[i].min_delta;
+        map_stats = fields[i].delta_values;
+      }
+
+      fields[i].no_of_bits_per_num = BitStream::BitLength(diff);
+      int32 v_diff = fields[i].max_value - fields[i].min_value;
+      fields[i].no_of_bits_per_value = BitStream::BitLength(v_diff);
+
+      diff++;
+      if (diff <= (int32)MAX_NUM_VAL_HUF)     // a few values, so use Huffman for them
+      { 
+        fields[i].Huffman_global = new HuffmanEncoder();
+        HuffmanEncoder::LoadTree(sb_bit_stream, *fields[i].Huffman_global);
+        sb_bit_stream.FlushInputWordBuffer();
+      }
+
+      continue;
+    }
+
+    sb_bit_stream.GetByte(tmp);
+    fields[i].is_len_constant = tmp != 0;
+    sb_bit_stream.GetWord(tmp);
+    fields[i].len = tmp;
+    sb_bit_stream.GetWord(tmp);
+    fields[i].max_len = tmp;
+    sb_bit_stream.GetWord(tmp);
+    fields[i].min_len = tmp;
+    fields[i].no_of_bits_per_len = BitStream::BitLength(fields[i].max_len - fields[i].min_len);
+    fields[i].data = new uchar[fields[i].len+1];
+    sb_bit_stream.GetBytes(fields[i].data, fields[i].len);
+    fields[i].Ham_mask = new bool[fields[i].len+1];
+
+    for (uint32 j = 0; j < fields[i].len; ++j)
+    {
+      sb_bit_stream.GetBits(tmp, 1);
+      fields[i].Ham_mask[j] = tmp != 0;
+    }
+    fields[i].Huffman_local.resize(MIN(fields[i].max_len, MAX_FIELD_STAT_LEN+1));
+
+    for (uint32 j = 0; j < MIN(fields[i].max_len, MAX_FIELD_STAT_LEN); ++j)
+    {
+      fields[i].Huffman_local[j] = NULL;
+      if (j >= fields[i].len || !fields[i].Ham_mask[j])
+      {
+        fields[i].Huffman_local[j] = new HuffmanEncoder(Field::HUF_LOCAL_SIZE);
+        HuffmanEncoder::LoadTree(sb_bit_stream, *fields[i].Huffman_local[j]);
+      }
+    }
+    if (fields[i].max_len >= MAX_FIELD_STAT_LEN)
+    {
+      fields[i].Huffman_local[MAX_FIELD_STAT_LEN] = new HuffmanEncoder(Field::HUF_LOCAL_SIZE);
+      HuffmanEncoder::LoadTree(sb_bit_stream, *fields[i].Huffman_local[MAX_FIELD_STAT_LEN]);   
+    }
+    sb_bit_stream.FlushInputWordBuffer();
+  }
+}
+
+// --------------------------------------------------------------------------------------------
+void FetchTitleBody(BitStream &sb_bit_stream, std::vector<Field> &fields, Record *&records, 
+  int64 no_records, uint32 fastq_flags)
+{
+  const int32 MAX_FIELD_STAT_LEN  = 128;
+  const int32 DEFAULT_B_SIZE      = 32;
+
+  int32 n_blocks = (no_records + DEFAULT_B_SIZE -1) / DEFAULT_B_SIZE;
+  int32 n_fields = fields.size();
+  std::vector<int32> prev_value(n_fields);
+  int32 rec_count = 0;
+  int32 first_rec_in_block;
+  bool is_num_fields_constant = (fastq_flags & FLAG_CONST_NUM_FIELDS) != 0;
+
+  for (int32 i = 0; i < n_fields; ++i)
+  {
+    fields[i].block_desc.resize(n_blocks);
+  }
+
+  uint32 n_fields_bits = BitStream::BitLength(n_fields);
+
+  for (int32 block_no = 0; block_no < n_blocks; ++block_no)
+  {
+    first_rec_in_block = rec_count;
+    rec_count += DEFAULT_B_SIZE;
+
+    if (rec_count > no_records)
+      rec_count = no_records;
+
+    uint32 tmp = 0;
+    for (int32 i = 0; i < n_fields; ++i)
+    {
+      if (fields[i].is_constant)
+        continue;
+
+      prev_value[i] = 0;
+      if (!fields[i].is_numeric)
+      {
+        sb_bit_stream.GetBit(tmp);
+        fields[i].block_desc[block_no].is_block_constant = tmp != 0;
+      }
+      else
+      {
+        sb_bit_stream.GetBit(tmp);
+        if (fields[i].is_delta_coding)
+        {
+          fields[i].block_desc[block_no].is_block_delta_constant = tmp != 0;
+        }
+        else
+        {
+          fields[i].block_desc[block_no].is_block_value_constant = tmp != 0;
+        }
+      }   
+    }
+
+    for (int32 i = first_rec_in_block; i < rec_count; ++i)
+    {
+      Record& cur_rec = records[i];
+
+      uint32 cn_fields = n_fields;
+      if (!is_num_fields_constant)
+      {
+        sb_bit_stream.GetBits(tmp, n_fields_bits);
+        cn_fields = tmp;
+      }
+
+      for (uint32 j = 0; j < cn_fields; ++j)
+      {
+        Field &cur_field = fields[j];
+        if (cur_field.is_constant)
+        {
+          cur_rec.AppendData(cur_field.data, cur_field.len, 'T');
+          cur_rec.AppendChar(cur_field.sep, 'T');
+          continue;
+        }
+        if (cur_field.is_numeric)
+        {
+          uint32 num_val = 0;
+
+          if ((i % DEFAULT_B_SIZE) == 0) // Is the first record of Block?
+          {
+            sb_bit_stream.GetBits(num_val, cur_field.no_of_bits_per_value);
+            num_val += cur_field.min_value;
+            uchar tmp_str[10];
+            int32 tmp_len = 0;
+            tmp_len = utils::to_string(tmp_str, num_val);
+
+            cur_rec.AppendData(tmp_str, tmp_len, 'T');
+            prev_value[j] = num_val;
+          }
+          else
+          {
+            if ((cur_field.is_delta_coding && !cur_field.block_desc[block_no].is_block_delta_constant) ||
+              (!cur_field.is_delta_coding && !cur_field.block_desc[block_no].is_block_value_constant))
+            {
+              if (cur_field.no_of_bits_per_num > 0)
+              {
+                if (cur_field.Huffman_global)
+                {
+                  uint32 bit;
+                  int32 h_tmp;
+
+                  sb_bit_stream.GetBits(bit, cur_field.Huffman_global->GetMinLen());
+                  h_tmp = cur_field.Huffman_global->DecodeFast(bit);
+
+                  while (h_tmp < 0)
+                  {
+                    sb_bit_stream.GetBit(bit);
+                    h_tmp = cur_field.Huffman_global->Decode(bit);
+                  };
+
+                  num_val = h_tmp;
+                }
+                else
+                {
+                  sb_bit_stream.GetBits(num_val, cur_field.no_of_bits_per_num);
+                }
+              }
+              else
+              {
+                num_val = 0;
+              }
+            }
+            else
+            {
+              if (cur_field.is_delta_coding)
+              {
+                num_val = 0;
+              }
+              else
+              {
+                num_val = prev_value[j] - cur_field.min_value;
+              }
+            }
+
+            if (cur_field.is_delta_coding)
+            {
+              num_val += prev_value[j] + cur_field.min_delta;
+            }
+            else
+            {
+              num_val += cur_field.min_value;
+            }
+
+            uchar tmp_str[10];
+            int32 tmp_len = 0;
+            tmp_len = utils::to_string(tmp_str, num_val);
+
+            cur_rec.AppendData(tmp_str, tmp_len, 'T');
+            prev_value[j] = num_val;
+
+          }
+          cur_rec.AppendChar(cur_field.sep, 'T');
+
+          continue;
+        }
+
+        if ((i % DEFAULT_B_SIZE) > 0 && cur_field.block_desc[block_no].is_block_constant)
+        {
+          uchar *tmp_str = new uchar[cur_field.block_str_len]; 
+          std::copy(records[first_rec_in_block].title.begin()+cur_field.block_str_start, 
+            records[first_rec_in_block].title.begin()+cur_field.block_str_start+cur_field.block_str_len, tmp_str);
+
+          cur_rec.AppendData(tmp_str, cur_field.block_str_len, 'T');
+          cur_rec.AppendChar(cur_field.sep, 'T');
+          delete[] tmp_str;
+
+          continue;
+        }
+
+        uint32 field_len;
+        if (!cur_field.is_len_constant)
+        {
+          sb_bit_stream.GetBits(field_len, cur_field.no_of_bits_per_len);      
+          field_len += cur_field.min_len;
+        }
+        else
+        {
+          field_len = cur_field.len;
+        }
+        
+        for (uint32 k = 0; k < field_len; ++k)
+        {
+          if (k < cur_field.len && cur_field.Ham_mask[k])
+          {
+            cur_rec.AppendChar(cur_field.data[k], 'T');
+          }
+          else
+          {
+            uint32 bit;
+            int32 h_tmp;
+            HuffmanEncoder *cur_huf = cur_field.Huffman_local[MIN(k, MAX_FIELD_STAT_LEN)]; 
+
+            sb_bit_stream.GetBits(bit, cur_huf->GetMinLen());
+            h_tmp = cur_huf->DecodeFast(bit);
+
+            while (h_tmp < 0)
+            {
+              sb_bit_stream.GetBit(bit);
+              h_tmp = cur_huf->Decode(bit);
+            };
+
+            tmp = h_tmp;
+            cur_rec.AppendChar((uchar) tmp, 'T');
+          }
+        }
+        if ((i % DEFAULT_B_SIZE) == 0 && cur_field.block_desc[block_no].is_block_constant)
+        {
+          cur_field.block_str_start = cur_rec.title.size() - field_len;
+          cur_field.block_str_len = field_len;
+        }
+
+        cur_rec.AppendChar(cur_field.sep, 'T');
+      }
+    }
+    sb_bit_stream.FlushInputWordBuffer();
+  }
+}
+
+// --------------------------------------------------------------------------------------------
+void FetchDNA(BitStream &sb_bit_stream, std::vector<uchar> &symbols, uint32 no_symbols, uint32 fastq_flags,
+  Record *&records, int64 no_records, std::vector<uint32> &no_ambiguity)
+{
+  uint32 tmp;
+  HuffmanEncoder *Huffman_sym = NULL;
+
+  // DNA symbols
+  symbols.resize(no_symbols);
+  for (uint32 i = 0; i < no_symbols; ++i)
+  {
+    sb_bit_stream.GetByte(tmp);
+    my_assert(tmp < 256);
+    symbols[i] = (uchar) tmp;
+  }
+
+  if ((fastq_flags & FLAG_DNA_PLAIN) == 0)
+  {
+    if (Huffman_sym)
+      delete Huffman_sym;
+
+    Huffman_sym = new HuffmanEncoder((uint32) symbols.size());
+
+    HuffmanEncoder::LoadTree(sb_bit_stream, *Huffman_sym); 
+  }
+
+  sb_bit_stream.FlushInputWordBuffer();
+
+  for (uint32 i = 0; i < no_records; ++i)
+  {
+    records[i].seq_len = records[i].qua_len - no_ambiguity[i];
+  }
+
+  if ((fastq_flags & FLAG_DNA_PLAIN) != 0)
+  {
+    for (uint32 i = 0; i < no_records; ++i)
+    {
+      uint32 cur_sequence_len = records[i].seq_len;
+      uchar *cur_sequence = new uchar[cur_sequence_len];
+
+      for (uint32 j = 0; j < cur_sequence_len; ++j)
+      {
+        uint32 tmp(0);      // reduce warning...
+        sb_bit_stream.Get2Bits(tmp);
+        cur_sequence[j] = symbols[tmp];
+      }
+      records[i].AppendData(cur_sequence, cur_sequence_len, 'D');
+      records[i].AppendChar('\n','D');
+      delete[] cur_sequence;
+    }
+  }
+  else
+  {
+    for (uint32 i = 0; i < no_records; ++i)
+    {
+      uint32 cur_sequence_len = records[i].seq_len;
+      uchar *cur_sequence = new uchar[cur_sequence_len];
+      for (uint32 j = 0; j < cur_sequence_len; ++j)
+      {
+        // Symbols
+        uint32 bit;
+        sb_bit_stream.GetBits(bit, Huffman_sym->GetMinLen());
+        int32 h_tmp = Huffman_sym->DecodeFast(bit);
+        while (h_tmp < 0)
+        {
+          sb_bit_stream.GetBit(bit);
+          h_tmp = Huffman_sym->Decode(bit);
+        };
+
+        cur_sequence[j] = symbols[h_tmp];
+      } 
+      records[i].AppendData(cur_sequence, cur_sequence_len, 'D');
+      records[i].AppendChar('\n','D');
+      delete[] cur_sequence;
+    }
+  }
+  sb_bit_stream.FlushInputWordBuffer();
+}
+
+// --------------------------------------------------------------------------------------------
+void FetchQuality(BitStream &sb_bit_stream, std::vector<uchar> &qualities, uint32 no_qualities, 
+  Record *&records, int64 no_records, uint32 fastq_flags, std::vector<uint32> &no_ambiguity,
+  uint32 max_quality_length)
+{
+  uint32 tmp;
+  HuffmanEncoder* huf;
+  std::vector<HuffmanEncoder*> Huffman_qua;
+
+  // Quality symbols
+  qualities.resize(no_qualities);
+  for (uint32 i = 0; i < no_qualities; ++i)
+  {
+    sb_bit_stream.GetByte(tmp);
+    my_assert(tmp < 256);
+    qualities[i] = (uchar) tmp;
+  }
+
+  // Quality Huffman codes
+  for (uint32 i = 0; i <= max_quality_length; ++i)
+  {
+    Huffman_qua.push_back(huf = new HuffmanEncoder((uint32) qualities.size()));
+    HuffmanEncoder::LoadTree(sb_bit_stream, *huf);
+  }
+
+  sb_bit_stream.FlushInputWordBuffer();
+
+  // Quality data
+  no_ambiguity.resize(no_records);
+  for (uint32 i = 0; i < no_records; ++i)
+  {
+    no_ambiguity[i] = 0;
+    uint32 cur_qua_len = records[i].qua_len;
+    uchar *cur_quality = new uchar[cur_qua_len];
+
+    for (uint32 j = 0; j < cur_qua_len; ++j)
+    {
+      uint32 bit;
+      int32 h_tmp;
+
+      sb_bit_stream.GetBits(bit, Huffman_qua[j+1]->GetMinLen());
+      h_tmp = Huffman_qua[j+1]->DecodeFast(bit);
+
+      while (h_tmp < 0)
+      {
+        sb_bit_stream.GetBit(bit);
+        h_tmp = Huffman_qua[j+1]->Decode(bit);
+      };
+
+      if ((cur_quality[j] = qualities[h_tmp]) >= 128)
+      {
+        no_ambiguity[i]++;
+      }
+    }
+
+    // This for loop only works if you have QUALITY_PLAIN_TRUNC
+    for (uint32 j = cur_qua_len; j < cur_qua_len; ++j)
+    {
+      cur_quality[j] = '#';
+    }
+
+    records[i].AppendData(cur_quality, cur_qua_len, 'Q');
+    records[i].AppendChar('\n','Q');
+    delete[] cur_quality;
+  }
+  sb_bit_stream.FlushInputWordBuffer();
+}
+
+// --------------------------------------------------------------------------------------------
+void MakeFooter(BitStream &footer_bit_stream, int32 g_size, int64 FASTQ_size, int32 n_blocks, int32 n_subblocks, 
   int32 *all_wr_overlaps, std::map<double,int32> &blocks_order, uint32 *lb_sizes)  
 {
   // Bits Encoding Processes Size
@@ -642,7 +1117,7 @@ void MakeFooter(BitStream &footer_bit_stream, int32 g_size, uint32 FASTQ_size, i
   // Bits Encoding Overlaps
   int32 BEOV = floor(log2(*std::max_element(all_wr_overlaps, all_wr_overlaps+g_size))) + 1;  
   // Are Last Blocks of Equal Size?
-  const uint32 LBES = *std::max_element(lb_sizes, lb_sizes+g_size) != *std::min_element(lb_sizes, lb_sizes+g_size) ? 0 : 1; 
+  const bool LBES = *std::max_element(lb_sizes, lb_sizes+g_size) != *std::min_element(lb_sizes, lb_sizes+g_size) ? 0 : 1; 
   // Create Footer buffer
   footer_bit_stream.Create(0);
 
@@ -655,7 +1130,18 @@ void MakeFooter(BitStream &footer_bit_stream, int32 g_size, uint32 FASTQ_size, i
   footer_bit_stream.PutBit(LBES);
 
   footer_bit_stream.PutBits(g_size, BEPS);
-  footer_bit_stream.PutBits(FASTQ_size, BEFS);
+
+  // When dealing with files bigger than 4Gb
+  if (BEFS > 32)
+  {
+    footer_bit_stream.PutBits(FASTQ_size >> 32, BEFS-32);
+    footer_bit_stream.PutBits(FASTQ_size & 0xFFFFFFFF, 32);
+  } 
+  else
+  {
+    footer_bit_stream.PutBits(FASTQ_size, BEFS);
+  }
+
   footer_bit_stream.PutBits(n_blocks, BEBS);
   footer_bit_stream.PutBits(n_subblocks, BESS);
 
@@ -695,19 +1181,113 @@ void MakeHeader(BitStream &header_bit_stream, BlockHeader &p_block_header)
   // Create header buffer
   header_bit_stream.Create(0);
   // Number of subblocks in this block
-  int32 n_sb = p_block_header.sb_offset_list.size();
+  p_block_header.NOSB = p_block_header.SBOL.size();
 
-  header_bit_stream.PutBits(p_block_header.wr_id, p_block_header.BEWR);
-  header_bit_stream.PutBits(n_sb, 6);
+  header_bit_stream.PutBits(p_block_header.WRID, p_block_header.BEWR);
+  header_bit_stream.PutBits(p_block_header.BHS, 12);
+  header_bit_stream.PutBits(p_block_header.NOSB, 6);
   header_bit_stream.PutBits(p_block_header.BESO, 5);
-  header_bit_stream.PutBits(p_block_header.split_sb, 2);
+  header_bit_stream.PutBits(p_block_header.BCSS, 2);
 
   // Bitpack subblock's offsets
-  for (int32 i = 0; i < n_sb; ++i)
+  for (int32 i = 0; i < p_block_header.NOSB; ++i)
   {
-    header_bit_stream.PutBits(p_block_header.sb_offset_list.at(i), p_block_header.BESO);
+    header_bit_stream.PutBits(p_block_header.SBOL.at(i), p_block_header.BESO);
   }
 
   // Round up to the next complete byte (< than 8 bits wasted)
   header_bit_stream.FlushPartialWordBuffer();
+}
+
+// --------------------------------------------------------------------------------------------
+void ReadFooter(BitStream &footer_bit_stream, Footer &footer)  
+{
+  uint32 bits;
+
+  //Read BEPS
+  footer_bit_stream.GetBits(bits, 4);
+  footer.BEPS = bits;
+  //Read BEFS
+  footer_bit_stream.GetBits(bits, 6);
+  footer.BEFS = bits;
+  //Read BEBS
+  footer_bit_stream.GetBits(bits, 4);
+  footer.BEBS = bits;
+  //Read BESS
+  footer_bit_stream.GetBits(bits, 4);
+  footer.BESS = bits;
+  //Read BELB
+  footer_bit_stream.GetBits(bits, 5);
+  footer.BELB = bits;
+  //Read BEOV
+  footer_bit_stream.GetBits(bits, 4);
+  footer.BEOV = bits;
+  //Read LBES
+  footer_bit_stream.GetBits(bits, 1);
+  footer.LBES = bits;
+
+  // Read PS: # of P's used to compressed
+  footer_bit_stream.GetBits(bits, footer.BEPS);
+  footer.PS = bits;
+
+  // Read FS: FASTQ file size
+  if (footer.BEFS > 32)
+  {
+    footer_bit_stream.GetBits(bits, footer.BEFS - 32);
+    footer.FS = bits;
+    footer_bit_stream.GetBits(bits, 32);
+    footer.FS = (footer.FS << 32) + bits;
+  } 
+  else
+  {
+    footer_bit_stream.GetBits(bits, footer.BEFS);
+    footer.FS = bits;
+  }
+
+  // Read BS: # of Compressed Blocks in NGSC file
+  footer_bit_stream.GetBits(bits, footer.BEBS);
+  footer.BS = bits;
+  // Read SS: # of Subblocks per Process (Constant for each P)
+  footer_bit_stream.GetBits(bits, footer.BESS);
+  footer.SS = bits;
+
+  // Get array of overlaps 
+  for (int32 i = 0; i < footer.PS - 1; ++i)
+  {
+    footer_bit_stream.GetBits(bits, footer.BEOV);
+    footer.OV.push_back(bits); 
+  }
+
+  // Minimun bits used to encode each CBO
+  int32 CBO_bits = ceil(log2(footer.PS));
+  // Get array of blocks order
+  for (int32 i = 0; i < footer.BS; ++i)
+  {
+    footer_bit_stream.GetBits(bits, CBO_bits);
+    footer.CBO.push_back(bits);
+  }
+
+  // Get last blocks sizes if footer.LBES == 0
+  if (footer.LBES == 0)
+  {
+    for (int32 i = 0; i < footer.PS; ++i)
+    {
+      footer_bit_stream.GetBits(bits, footer.BELB);
+      footer.LBS.push_back(bits); 
+    }
+  }
+
+  footer.ABS.assign(footer.BS, 8 << 20);
+
+  for (int32 i = 0; i < footer.PS; ++i)
+  {
+    for (int32 j = footer.BS -1; j >= 0; --j)
+    {
+      if (footer.CBO[j] == i)
+      {
+        footer.ABS[j] = footer.LBS[i];
+        break;
+      }
+    }
+  }
 }

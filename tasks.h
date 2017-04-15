@@ -29,10 +29,7 @@ void AnalyzeQuality(uchar *read_buffer, Record *&records, int64 no_records, uint
   std::vector<uchar> &qualities, uchar *qua_code, uint32 **&quality_stats, uint32 *&raw_quality_stats);
 
 // --------------------------------------------------------------------------------------------
-void StoreTitleHeader(BitStream &h_title_bit_stream, std::vector<Field> &fields);
-
-// --------------------------------------------------------------------------------------------
-void StoreTitleBody(BitStream &b_title_bit_stream, std::vector<Field> &fields, uchar *read_buffer,
+void StoreTitle(BitStream &title_bit_stream, std::vector<Field> &fields, uchar *read_buffer,
   Record *&records, uint32 field_0_rec_0_pos, int64 no_records);
 
 // --------------------------------------------------------------------------------------------
@@ -45,10 +42,29 @@ void StoreQuality(BitStream &quality_bit_stream, uchar *read_buffer, Record *&re
   HuffmanEncoder::Code **&qua_huf_codes, HuffmanEncoder::Code *&raw_qua_huf_codes);
 
 // --------------------------------------------------------------------------------------------
-void MakeFooter(BitStream &footer_bit_stream, int32 g_size, uint32 FASTQ_size, int32 n_blocks, 
+void FetchTitleHeader(BitStream &sb_bit_stream, std::vector<Field> &fields);
+
+// --------------------------------------------------------------------------------------------
+void FetchTitleBody(BitStream &sb_bit_stream, std::vector<Field> &fields, Record *&records, 
+  int64 no_records, uint32 fastq_flags);
+
+// --------------------------------------------------------------------------------------------
+void FetchDNA(BitStream &sb_bit_stream, std::vector<uchar> &symbols, uint32 no_symbols, uint32 fastq_flags,
+  Record *&records, int64 no_records, std::vector<uint32> &no_ambiguity);
+
+// --------------------------------------------------------------------------------------------
+void FetchQuality(BitStream &sb_bit_stream, std::vector<uchar> &qualities, uint32 no_qualities, 
+  Record *&records, int64 no_records, uint32 fastq_flags, std::vector<uint32> &no_ambiguity,
+  uint32 max_quality_length);
+
+// --------------------------------------------------------------------------------------------
+void MakeFooter(BitStream &footer_bit_stream, int32 g_size, int64 FASTQ_size, int32 n_blocks, 
   int32 n_subblocks, int32 *all_wr_overlaps, std::map<double,int32> &blocks_order, uint32 *lb_sizes);
 
 // --------------------------------------------------------------------------------------------
 void MakeHeader(BitStream &header_bit_stream, BlockHeader &p_block_header);
+
+// --------------------------------------------------------------------------------------------
+void ReadFooter(BitStream &footer_bit_stream, Footer &footer) ;
 
 #endif

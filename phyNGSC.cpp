@@ -75,7 +75,7 @@ int main(int argc, char ** argv)
 
   // Open input/output files
   err_read  = MPI_File_open(MPI_COMM_WORLD, argv[1], MPI_MODE_RDONLY, MPI_INFO_NULL, &input_FASTQ);
-  err_write = MPI_File_open(MPI_COMM_WORLD, argv[2], MPI_MODE_CREATE | MPI_MODE_WRONLY, MPI_INFO_NULL, &output_NGSC);
+  err_write = MPI_File_open(MPI_COMM_WORLD, argv[2], MPI_MODE_CREATE | MPI_MODE_RDWR, MPI_INFO_NULL, &output_NGSC);
   no_threads = atoi(argv[3]);
 
   if (no_threads)
@@ -99,7 +99,7 @@ int main(int argc, char ** argv)
   if (err_read || err_write) {
 
     if (p_rank == 0)
-      fprintf(stderr, "\n[E] ERROR: MPI failed to open file <<%s>>.[%d][%d]\n", err_read ? argv[1] : argv[2], err_read, err_write);
+      fprintf(stderr, "\n[E] ERROR: MPI failed to open file <<%s>>.\n", err_read ? argv[2] : argv[1]);
     MPI_Finalize();
     exit(2);
   }
@@ -159,10 +159,9 @@ int main(int argc, char ** argv)
   // Get the actual overlap used to start a complete rec, to build footer
   wr_ov_used = r_buffer_curr_pos;
   // Add the working region ID to the headers of this processor
-  p_block_header.wr_id = p_rank;
+  p_block_header.WRID = p_rank;
   p_block_header.BEWR = ceil(log2(g_size));
-  p_block_header.split_sb = 0;
-
+  p_block_header.BCSS = 0;
 
   // Begin processing FASTQ file with each p_rank's corresponding working region
   // --------------------------------------------------------------------------------------------
@@ -211,7 +210,7 @@ int main(int argc, char ** argv)
 
     int64 *tmp_title_pos = new int64[no_threads*records_per_th];
     int64 *tmp_seq_pos   = new int64[no_threads*records_per_th];
-    int64 *th_rec_count = new int64[no_threads];
+    int64 *th_rec_count  = new int64[no_threads];
 
     ++p_subblock_count;
 
@@ -224,7 +223,7 @@ int main(int argc, char ** argv)
     }
 
     BitStream p_write_buff_bit_stream;
-    BitStream h_title_bit_stream, b_title_bit_stream;
+    BitStream title_bit_stream;
     BitStream dna_bit_stream;
     BitStream quality_bit_stream;
 
@@ -434,15 +433,15 @@ int main(int argc, char ** argv)
     fastq_flags = FLAG_PLUS_ONLY | FLAG_DNA_PLAIN | FLAG_CONST_NUM_FIELDS;
     fastq_flags &= ~(FLAG_LINE_BREAKS | FLAG_VARIABLE_LENGTH | FLAG_TRY_LZ | FLAG_USE_DELTA | 
     FLAG_DELTA_CONSTANT | FLAG_DELTA_NO_BEGIN_NUC);
-
+    
     // OpenMP Parallel Region: Threads analize, process and compress records in buffer.
     // --------------------------------------------------------------------------------------------
-    #pragma omp parallel shared(records, read_buffer, fields, rec_start_pos, dna_occ) num_threads(no_threads)
+    #pragma omp parallel default(shared) num_threads(no_threads)
     {
       std::vector<uint32> th_dna_occ(256, 0);
       bool th_alphabet_qua[256] = {false};
-      uint32 local_max_qua_len  = 0, local_max_seq_len = 0;
-      uint32 local_min_qua_len  = (uint32) -1, local_min_seq_len = (uint32) -1;
+      uint32 th_max_qua_len  = 0, th_max_seq_len = 0;
+      uint32 th_min_qua_len  = (uint32) -1, th_min_seq_len = (uint32) -1;
 
       bool is_delta             = false;
       bool is_delta_constant    = true;
@@ -464,12 +463,12 @@ int main(int argc, char ** argv)
       for (int64 i = 0; i < no_records; ++i)
       { 
         uint32 j, k, q, tmp;
-        uint32 dna_seq_length = records[i].seq_end_pos - records[i].title_end_pos;
         uint32 seq_start = records[i].title_end_pos + 1;
+        uint32 seq_end   = records[i].seq_end_pos;
+        uint32 seq_len   = seq_end - seq_start;
         uint32 qua_start = records[i].seq_end_pos + 3; 
-        uint32 seq_end = records[i].seq_end_pos;
-        uint32 qua_end = qua_start + dna_seq_length - 1;
-        uint32 qua_len = dna_seq_length, seq_len = 0;
+        uint32 qua_end   = qua_start + seq_len;
+        uint32 qua_len   = seq_len;
         
         if (is_first_th_rec)
         {
@@ -516,7 +515,7 @@ int main(int argc, char ** argv)
           }
           
           uint32 n = 1 - (uint32)has_no_begin_nuc;
-          for ( ; n < dna_seq_length; ++n)
+          for ( ; n < seq_len; ++n)
           {
             switch (symbol)
             {
@@ -547,7 +546,7 @@ int main(int argc, char ** argv)
           qua_end -= translation;
         }
 
-        // Check whether make transfer
+        // Check whether make transfer or not
         bool make_transfer = false;
         bool possible_transfer = true;
         for (j = seq_start, q = qua_start; j < seq_end; ++j, ++q)
@@ -577,7 +576,7 @@ int main(int argc, char ** argv)
           {
             if ((tmp = trans_amb_codes[read_buffer[j]]) > 1)
             {
-              read_buffer[j + dna_seq_length + 2] = (uchar)(128 + (tmp << 3) - 16 + (read_buffer[j + dna_seq_length + 2] - 33));
+              read_buffer[j + seq_len + 3] = (uchar)(128 + (tmp << 3) - 16 + (read_buffer[j + seq_len + 3] - 33));
             }
             else
             {
@@ -588,6 +587,7 @@ int main(int argc, char ** argv)
           seq_end = k;
         }
 
+        // Recalculate seq_len after amb
         seq_len = seq_end - seq_start;
 
         if (!is_delta)
@@ -598,24 +598,27 @@ int main(int argc, char ** argv)
           }
         }
 
-        if (qua_len > local_max_qua_len)
-          local_max_qua_len = qua_len;
+        if (qua_len > th_max_qua_len)
+          th_max_qua_len = qua_len;
 
-        if (qua_len < local_min_qua_len)
-          local_min_qua_len = qua_len;
+        if (qua_len < th_min_qua_len)
+          th_min_qua_len = qua_len;
 
-        if (seq_len > local_max_seq_len)
-          local_max_seq_len = seq_len;
+        if (seq_len > th_max_seq_len)
+          th_max_seq_len = seq_len;
 
-        if (seq_len < local_min_seq_len)
-          local_min_seq_len = seq_len;
+        if (seq_len < th_min_seq_len)
+          th_min_seq_len = seq_len;
 
         // Identify quality alphabet
         for (j = qua_start; j < qua_end; ++j)
           th_alphabet_qua[read_buffer[j]] = true;
+
+        records[i].seq_len = seq_len;
+        records[i].qua_len = qua_len;
       }
 
-      // Reduce each thread record analisis result
+      // Reduce each thread's record analysis result
       #pragma omp critical
       { 
         for (uint32 k = 0; k < 256; ++k)
@@ -624,17 +627,17 @@ int main(int argc, char ** argv)
           alphabet_qua[k] |= th_alphabet_qua[k];
         }
 
-        if (local_max_qua_len > max_quality_length)
-          max_quality_length = local_max_qua_len;
+        if (th_max_qua_len > max_quality_length)
+          max_quality_length = th_max_qua_len;
 
-        if (local_min_qua_len > min_quality_length)
-          min_quality_length = local_min_qua_len;
+        if (th_min_qua_len > min_quality_length)
+          min_quality_length = th_min_qua_len;
 
-        if (local_max_seq_len > max_sequence_length)
-          max_sequence_length = local_max_seq_len;
+        if (th_max_seq_len > max_sequence_length)
+          max_sequence_length = th_max_seq_len;
 
-        if (local_min_seq_len > min_sequence_length)
-          min_sequence_length = local_min_seq_len;
+        if (th_min_seq_len > min_sequence_length)
+          min_sequence_length = th_min_seq_len;
 
         if (max_sequence_length > global_max_sequence_length)
           global_max_sequence_length = max_sequence_length;
@@ -648,6 +651,9 @@ int main(int argc, char ** argv)
         if (has_no_begin_nuc)
           fastq_flags |= FLAG_DELTA_NO_BEGIN_NUC;
       }
+
+      // To avoid race condition with he next omp single
+      #pragma omp barrier
 
       // Only one thread prepares all variables and flags to start compression
       #pragma omp single 
@@ -677,25 +683,17 @@ int main(int argc, char ** argv)
             qualities.push_back((uchar) i);
             qua_code[i] = (uchar) qua_idx++;
           }
-        }        
+        }  
       }
 
       // Analize, compress and store record information
       #pragma omp sections
       {
-
         // Store title header information
         #pragma omp section
         {
-          h_title_bit_stream.Create(1);
-          StoreTitleHeader(h_title_bit_stream, fields);
-        }
-
-        // Store title information
-        #pragma omp section
-        {
-          b_title_bit_stream.Create(1);
-          StoreTitleBody(b_title_bit_stream, fields, read_buffer, records, no_records, rec_start_pos);
+          title_bit_stream.Create(1);
+          StoreTitle(title_bit_stream, fields, read_buffer, records, rec_start_pos, no_records);
         }
 
         // Analize DNA data and store information
@@ -737,12 +735,12 @@ int main(int argc, char ** argv)
     {
       for (uint32 i = 0; i < no_records; ++i)
       {
-        uint32 qua_len = records[i].seq_end_pos - records[i].title_end_pos;
+        uint32 qua_len = records[i].qua_len;
         p_write_buff_bit_stream.PutBits(qua_len, quality_len_bits);
       }
       p_write_buff_bit_stream.FlushPartialWordBuffer();
     }
-
+    
     // Prepare for next read from the FASTQ working region
     p_bytes_read += (records[no_records - 1].seq_end_pos * 2) - records[no_records - 1].title_end_pos + 3;
     r_buffer_curr_pos = p_bytes_read + p_wr_start;
@@ -792,14 +790,13 @@ int main(int argc, char ** argv)
       raw_qua_huf_codes = NULL;
     }
 
-    uint32 w_title_h_len = h_title_bit_stream.GetIO_Buffer_Pos();
-    uint32 w_title_b_len = b_title_bit_stream.GetIO_Buffer_Pos();
+    uint32 w_title_len = title_bit_stream.GetIO_Buffer_Pos();
     uint32 w_dna_len = dna_bit_stream.GetIO_Buffer_Pos();
     uint32 w_quality_len = quality_bit_stream.GetIO_Buffer_Pos();
     uint32 w_info_buff_len = p_write_buff_bit_stream.GetIO_Buffer_Pos();
     
     // Allocate an specific ammount of memory for the copy buffer
-    p_bytes_to_copy = w_title_h_len + w_title_b_len + w_dna_len + w_quality_len + w_info_buff_len;
+    p_bytes_to_copy = w_title_len + w_dna_len + w_quality_len + w_info_buff_len;
     copy_buffer = (uchar*) malloc((p_bytes_to_copy) * sizeof(uchar));
 
     // Copy SubBlock's data into copy buffer
@@ -809,51 +806,42 @@ int main(int argc, char ** argv)
       // Copy general information about the compressed chunk to copy buffer
       #pragma omp section
       {
-        uchar *tem_buffer = p_write_buff_bit_stream.GetIO_Buffer();
-        std::copy(tem_buffer, tem_buffer+w_info_buff_len, copy_buffer);
+        std::vector<uchar> tem_buffer(p_write_buff_bit_stream.GetIO_Buffer());
         p_write_buff_bit_stream.Close();
-      }
-
-      // Copy title header information to copy buffer
-      #pragma omp section
-      {
-        uchar *tem_buffer = h_title_bit_stream.GetIO_Buffer();
-        uint32 bytes_in_w_buff = w_info_buff_len;
-        std::copy(tem_buffer, tem_buffer+w_title_h_len, copy_buffer+bytes_in_w_buff);
-        h_title_bit_stream.Close();
+        std::copy(tem_buffer.begin(), tem_buffer.end(), copy_buffer);
       }
 
       // Copy title information to copy buffer
       #pragma omp section
       {
-        uchar *tem_buffer = b_title_bit_stream.GetIO_Buffer();
-        uint32 bytes_in_w_buff = w_info_buff_len + w_title_h_len;
-        std::copy(tem_buffer, tem_buffer+w_title_b_len, copy_buffer+bytes_in_w_buff);
-        b_title_bit_stream.Close();
+        std::vector<uchar> tem_buffer(title_bit_stream.GetIO_Buffer());
+        title_bit_stream.Close();
+        uint32 bytes_in_w_buff = w_info_buff_len;
+        std::copy(tem_buffer.begin(), tem_buffer.end(), copy_buffer+bytes_in_w_buff);
+      }
+
+      // Copy quality information to copy buffer
+      #pragma omp section
+      {
+        std::vector<uchar> tem_buffer(quality_bit_stream.GetIO_Buffer());
+        quality_bit_stream.Close();
+        uint32 bytes_in_w_buff = w_info_buff_len + w_title_len;
+        std::copy(tem_buffer.begin(), tem_buffer.end(), copy_buffer+bytes_in_w_buff);
       }
 
       // Copy DNA information to copy buffer
       #pragma omp section
       {
-        uchar *tem_buffer = dna_bit_stream.GetIO_Buffer();
-        uint32 bytes_in_w_buff = w_info_buff_len + w_title_h_len + w_title_b_len;
-        std::copy(tem_buffer, tem_buffer+w_dna_len, copy_buffer+bytes_in_w_buff);
+        std::vector<uchar> tem_buffer(dna_bit_stream.GetIO_Buffer());
         dna_bit_stream.Close();
-      }
-
-      // Copy quality information
-      #pragma omp section
-      {
-        uchar *tem_buffer = quality_bit_stream.GetIO_Buffer();
-        uint32 bytes_in_w_buff = w_info_buff_len + w_title_h_len + w_title_b_len + w_dna_len;
-        std::copy(tem_buffer, tem_buffer+w_quality_len, copy_buffer+bytes_in_w_buff);
-        quality_bit_stream.Close();
+        uint32 bytes_in_w_buff = w_info_buff_len + w_title_len + w_quality_len;
+        std::copy(tem_buffer.begin(), tem_buffer.end(), copy_buffer+bytes_in_w_buff);
       }
     }
 
     // Add information to the header for the current block
-    p_block_header.sb_offset_list.push_back(p_bytes_to_copy);
-    p_block_header.BESO = floor(log2(*std::max_element(p_block_header.sb_offset_list.begin(), p_block_header.sb_offset_list.end()))) + 1;
+    p_block_header.SBOL.push_back(p_bytes_to_copy);
+    p_block_header.BESO = floor(log2(*std::max_element(p_block_header.SBOL.begin(), p_block_header.SBOL.end()))) + 1;
     
     int32 h_size = p_block_header.HeaderSize();
 
@@ -864,8 +852,7 @@ int main(int argc, char ** argv)
     if ((p_bytes_written+p_bytes_to_copy+h_size) > w_buffer_size)
     {
       BitStream header_bit_stream;
-      p_block_header.split_sb |= LSBS;
-
+      p_block_header.BCSS |= LSBS;
       // Get the number of bytes needed to fill the write_buffer.
       uint32 bytes_fill_buffer = w_buffer_size - (p_bytes_written + h_size);
       // Copy bytes_fill_buffer bytes to write_buffer, to fill it up.
@@ -874,10 +861,13 @@ int main(int argc, char ** argv)
       std::copy_backward(write_buffer, write_buffer+(p_bytes_written+bytes_fill_buffer), write_buffer+w_buffer_size);
 
       // Build header
+      p_block_header.BHS = h_size;
+      p_block_header.SBOL.pop_back();
+      p_block_header.SBOL.push_back(bytes_fill_buffer);
       MakeHeader(header_bit_stream, p_block_header);
-      uchar *header_buffer = header_bit_stream.GetIO_Buffer();
+      std::vector<uchar> header_buffer(header_bit_stream.GetIO_Buffer());
       // Add header to Block
-      std::copy(header_buffer, header_buffer+h_size, write_buffer);
+      std::copy(header_buffer.begin(), header_buffer.end(), write_buffer);
 
       header_bit_stream.Close();
 
@@ -900,16 +890,16 @@ int main(int argc, char ** argv)
       // Copy rest of the bytes in copy_buffer to write_buffer.
       std::copy(copy_buffer+bytes_fill_buffer, copy_buffer+p_bytes_to_copy, write_buffer);
       p_bytes_written = p_bytes_to_copy - bytes_fill_buffer;
-      p_block_header.split_sb |= FSBS;
-      p_block_header.split_sb &= ~LSBS;
-      p_block_header.sb_offset_list.clear();
+      p_block_header.BCSS |= FSBS;
+      p_block_header.BCSS &= ~LSBS;
+      p_block_header.SBOL.clear();
+      p_block_header.SBOL.push_back(p_bytes_written);
     }
     else
-    {
+    { 
       // Copy subblock in copy_buffer to write_buffer
       std::copy(copy_buffer, copy_buffer+p_bytes_to_copy, write_buffer+p_bytes_written);
       p_bytes_written += p_bytes_to_copy;
-
     }
 
     free(copy_buffer);
@@ -920,12 +910,13 @@ int main(int argc, char ** argv)
   if(p_bytes_written > 0)
   {
     BitStream header_bit_stream;
+    p_block_header.BHS = p_block_header.HeaderSize();
     MakeHeader(header_bit_stream, p_block_header);
-    uchar *header_buffer = header_bit_stream.GetIO_Buffer();
+    std::vector<uchar> header_buffer(header_bit_stream.GetIO_Buffer());
     int32 header_size = header_bit_stream.GetIO_Buffer_Pos();
 
     std::copy_backward(write_buffer, write_buffer+p_bytes_written, write_buffer+(p_bytes_written+header_size));
-    std::copy(header_buffer, header_buffer+header_size, write_buffer);
+    std::copy(header_buffer.begin(), header_buffer.end(), write_buffer);
 
     p_bytes_written += header_size;
 
@@ -994,7 +985,7 @@ int main(int argc, char ** argv)
       n_total_subblocks += all_info[i].n_subblocks;
       timestamps_counts[i] = all_info[i].n_blocks;
       all_wr_overlaps[i] = all_info[i].wr_overlap;
-      lb_sizes[i]	= all_info[i].last_block_size;
+      lb_sizes[i] = all_info[i].last_block_size;
     }
 
     TOCW_buffer = (double*) malloc(n_total_blocks * sizeof(double));
@@ -1006,26 +997,53 @@ int main(int argc, char ** argv)
   if (p_rank == 0)
   {
     std::map<double,int32> blocks_order;
+    std::vector<int32> block_counter(g_size, 0);
     for (int32 i = 0; i < g_size; ++i)
     {
       for (int32 j = 0; j < timestamps_counts[i]; ++j)
       {
         int32 ts_pos = j + displs[i];
         blocks_order[TOCW_buffer[ts_pos]] = i;
+        block_counter[i]++; 
       }
     }
     
+    // Verify footer's information and correct it if there's a header-footer mismatch
+    // --------------------------------------------------------------------------------------------
+    uint32 start_pos = 0;
+    read_buffer  = (uchar*) malloc(10 * sizeof(uchar));
+
+    for (std::map<double, int>::iterator it = blocks_order.begin(); it != blocks_order.end(); ++it)
+    {
+      MPI_File_read_at(output_NGSC, start_pos, read_buffer, 10, MPI_CHAR, MPI_STATUS_IGNORE);
+
+      int32 WRID = read_buffer[0];
+      WRID = (WRID << 8) + read_buffer[1];
+      WRID >>= 16 - (int32)ceil(log2(g_size));
+
+      if (WRID != it->second)
+        blocks_order.at(it->first) = WRID;
+
+      if (block_counter[WRID] > 1)
+        start_pos += 8 << 20;
+      else
+        start_pos += lb_sizes[WRID];
+
+      block_counter[WRID]--;
+    }
+    
+    free(read_buffer);
     BitStream footer_bit_stream;
 
     // Build footer
     MakeFooter(footer_bit_stream, g_size, FASTQ_size, n_total_blocks, n_total_subblocks, 
                 all_wr_overlaps, blocks_order, lb_sizes);
 
-    uchar *footer_buffer = footer_bit_stream.GetIO_Buffer();
+    std::vector<uchar> footer_buffer(footer_bit_stream.GetIO_Buffer());
     int32 footer_size = footer_bit_stream.GetIO_Buffer_Pos();
     
     // Write footer to NGSC file
-    MPI_File_write_shared(output_NGSC, footer_buffer, footer_size, MPI_CHAR, &status);
+    MPI_File_write_shared(output_NGSC, &footer_buffer[0], footer_size, MPI_CHAR, &status);
     // Close stream
     footer_bit_stream.Close();
 

@@ -12,7 +12,7 @@ As a proof-of-concept, we implemented some methods developed for [DSRC v1](http:
 
 ### Disclaimer:
 
-All files provided in this project are part of the article "*A Hybrid MPI-OpenMP Strategy to Speedup the Compression of Big Next-Generation Sequencing Datasets*" under review by the **IEEE Transactions on Parallel and Distributed Systems** journal and should be use for testing purposes.
+All files provided in this project are part of the article "*[A Hybrid MPI-OpenMP Strategy to Speedup the Compression of Big Next-Generation Sequencing Datasets](http://ieeexplore.ieee.org/stamp/stamp.jsp?tp=&arnumber=7895161&isnumber=4359390)*" accepted for publication in the **IEEE Transactions on Parallel and Distributed Systems** journal and should be used for testing purposes.
 
 ## Getting Started
 
@@ -78,16 +78,16 @@ The output should look similar to the one below:
 ```
 [I] INFO: Processing <<input10MB.fastq>> with 8 MPI processes and 5 threads per process.
 
-RANK	COMP_TIME	N_BLOCK	N_SUBBLOCKS
+RANK   COMP_TIME   N_BLOCK   N_SUBBLOCKS
 ----------------------------------------------
-0		3.269169	3		16
-2		3.101142	3		16
-3		3.101125	2		16
-4		3.268828	2		16
-5		3.268804	3		16
-6		3.211773	3		16
-1		3.143939	3		16
-7		3.211767	3		16
+0      3.269169    3         16
+2      3.101142    3         16
+3      3.101125    2         16
+4      3.268828    2         16
+5      3.268804    3         16
+6      3.211773    3         16
+1      3.143939    3         16
+7      3.211767    3         16
 ```
 
 ## Dataset Files

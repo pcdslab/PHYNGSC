@@ -203,3 +203,20 @@ void HuffmanEncoder::StoreTree(BitStream& bit_stream, HuffmanEncoder& tree)
 
 	delete [] mem_buf;
 }
+
+// --------------------------------------------------------------------------------------------
+void HuffmanEncoder::LoadTree(BitStream& bit_stream, HuffmanEncoder& tree)
+{
+	static uchar* mem_buf = NULL;
+	static uint32 mem_size;
+
+	bit_stream.FlushInputWordBuffer();
+
+	bit_stream.GetWord(mem_size);
+	my_assert(mem_size > 0);
+	mem_buf = new uchar[mem_size];
+	bit_stream.GetBytes(mem_buf, mem_size);
+	tree.LoadTree(mem_buf, mem_size);
+
+	delete [] mem_buf;
+}

@@ -96,4 +96,3 @@ class BitStream;
 class HuffmanEncoder;
 
 #endif
-

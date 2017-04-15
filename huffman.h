@@ -29,6 +29,7 @@ public:
 	inline ~HuffmanEncoder();
 
 	static void StoreTree(BitStream& bit_stream, HuffmanEncoder& tree);
+	static void LoadTree(BitStream& bit_stream, HuffmanEncoder& tree);
 
 	inline bool Insert(const uint32 frequency);
 	Code* Complete(bool compact = true);
@@ -284,4 +285,3 @@ bool HuffmanEncoder::RestartDecompress(uint32 _size, uint32 _root_id)
 
 
 #endif
-
